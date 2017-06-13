@@ -10,12 +10,14 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web.Http;
 using System.Web.Http.Cors;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace AttachmentsService.Controllers
 {
@@ -29,7 +31,7 @@ namespace AttachmentsService.Controllers
 
             try
             {
-                response = GetAttachmentsFromExchangeServer(request);
+                response = GetAttachmentsFromExchangeServerUsingEWS(request);
             }
             catch (Exception ex)
             {
@@ -82,6 +84,139 @@ namespace AttachmentsService.Controllers
             // Return the URI string for the container, including the SAS token.
             return blob.Uri + sasBlobToken;
         }
+        private static Stream CopyAndClose(Stream inputStream)
+        {
+            const int readSize = 256;
+            byte[] buffer = new byte[readSize];
+            MemoryStream ms = new MemoryStream();
+
+            int count = inputStream.Read(buffer, 0, readSize);
+            while (count > 0)
+            {
+                ms.Write(buffer, 0, count);
+                count = inputStream.Read(buffer, 0, readSize);
+            }
+            ms.Position = 0;
+            inputStream.Close();
+            return ms;
+        }
+
+        // This method processes the response from the Exchange server.
+        // In your application the bulk of the processing occurs here.
+        private List<AttachmentProcessingDetails> ProcessXmlResponse(XElement responseEnvelope, ServiceRequest request, CloudBlobContainer container)
+        {
+            List<AttachmentProcessingDetails> al = new List<AttachmentProcessingDetails>();
+            SHA256 mySHA256 = SHA256Managed.Create();
+            // First, check the response for web service errors.
+            var errorCodes = from errorCode in responseEnvelope.Descendants
+                             ("{http://schemas.microsoft.com/exchange/services/2006/messages}ResponseCode")
+                             select errorCode;
+            // Return the first error code found.
+            foreach (var errorCode in errorCodes)
+            {
+                if (errorCode.Value != "NoError")
+                {
+                    return null;
+                }
+            }
+
+            // No errors found, proceed with processing the content.
+            // First, get and process file attachments.
+            var fileAttachments = from fileAttachment in responseEnvelope.Descendants
+                              ("{http://schemas.microsoft.com/exchange/services/2006/types}FileAttachment")
+                                  select fileAttachment;
+            foreach (var fileAttachment in fileAttachments)
+            {
+                var fileContent = fileAttachment.Element("{http://schemas.microsoft.com/exchange/services/2006/types}Content");
+                var fileName = fileAttachment.Element("{http://schemas.microsoft.com/exchange/services/2006/types}Name").Value;
+                var fileData = System.Convert.FromBase64String(fileContent.Value);
+                var s = new MemoryStream(fileData);
+                var blobName = request.folderName + "/" + fileName;
+                CloudBlockBlob blockBlob = container.GetBlockBlobReference(blobName);
+                byte[] hashValue;
+                blockBlob.UploadFromStream(s);
+                // start from scratch again
+                s.Position = 0;
+                // Compute the hash of the fileStream.
+                hashValue = mySHA256.ComputeHash(s);
+                al.Add(new AttachmentProcessingDetails()
+                {
+                    name = fileName,
+                    url = blockBlob.StorageUri.PrimaryUri.AbsoluteUri,
+                    hash = Convert.ToBase64String(hashValue),
+                    sasToken = GetBlobSasUri(container, blobName)
+                });
+            }
+            return al;
+
+        }
+        private ServiceResponse GetAttachmentsFromExchangeServerUsingEWS(ServiceRequest request)
+        {
+            var storageAccount = CloudStorageAccount.Parse(CloudConfigurationManager.GetSetting("StorageAccountConnectionString"));
+            var blobClient = storageAccount.CreateCloudBlobClient();
+            var container = blobClient.GetContainerReference(request.containerName);
+            container.CreateIfNotExists();
+
+            var attachmentsProcessedCount = 0;
+            List<AttachmentProcessingDetails> attachmentProcessingDetails = new List<AttachmentProcessingDetails>();
+            foreach (var attachment in request.attachments)
+            {
+                // Prepare a web request object.
+                HttpWebRequest webRequest = WebRequest.CreateHttp(request.ewsUrl);
+                webRequest.Headers.Add("Authorization",
+                  string.Format("Bearer {0}", request.attachmentToken));
+                webRequest.PreAuthenticate = true;
+                webRequest.AllowAutoRedirect = false;
+                webRequest.Method = "POST";
+                webRequest.ContentType = "text/xml; charset=utf-8";
+
+                // Construct the SOAP message for the GetAttachment operation.
+                byte[] bodyBytes = Encoding.UTF8.GetBytes(
+                  string.Format(GetAttachmentSoapRequest, attachment.id));
+                webRequest.ContentLength = bodyBytes.Length;
+
+                Stream requestStream = webRequest.GetRequestStream();
+                requestStream.Write(bodyBytes, 0, bodyBytes.Length);
+                requestStream.Close();
+
+                // Make the request to the Exchange server and get the response.
+                HttpWebResponse webResponse = (HttpWebResponse)webRequest.GetResponse();
+
+                // If the response is okay, create an XML document from the reponse
+                // and process the request.
+                if (webResponse.StatusCode == HttpStatusCode.OK)
+                {
+                    var responseStream = webResponse.GetResponseStream();
+
+                    var responseEnvelope = XElement.Load(responseStream);
+
+                    // After creating a memory stream containing the contents of the 
+                    // attachment, this method writes the XML document to the trace output.
+                    // Your service would perform it's processing here.
+                    if (responseEnvelope != null)
+                    {
+                        attachmentProcessingDetails.AddRange(ProcessXmlResponse(responseEnvelope, request, container));
+                    }
+
+                    // Close the response stream.
+                    responseStream.Close();
+                    webResponse.Close();
+
+                }
+                // If the response is not OK, return an error message for the 
+                // attachment.
+                else
+                {
+
+                }
+            }
+
+            var response = new ServiceResponse();
+            response.attachmentsProcessed = attachmentsProcessedCount;
+            response.attachmentProcessingDetails = attachmentProcessingDetails.ToArray();
+            return response;
+        }
+        /*
         // This method does the work of making an Exchange Web Services (EWS) request to get the 
         // attachments from the Exchange server. This implementation makes an individual
         // request for each attachment, and returns the count of attachments processed.
@@ -95,6 +230,7 @@ namespace AttachmentsService.Controllers
             int processedCount = 0;
             List<AttachmentProcessingDetails> attachmentProcessingDetails = new List<AttachmentProcessingDetails>();
             SHA256 mySHA256 = SHA256Managed.Create();
+
 
             foreach (AttachmentDetails attachment in request.attachments)
             {
@@ -124,14 +260,15 @@ namespace AttachmentsService.Controllers
                     var blobName = request.folderName + "/" + attachment.name;
                     CloudBlockBlob blockBlob = container.GetBlockBlobReference(blobName);
                     byte[] hashValue;
-                    // Create or overwrite the "myblob" blob with contents from a local file.
                     using (var responseStream = webResponse.GetResponseStream())
                     {
-                        blockBlob.UploadFromStream(responseStream);
-                        // Be sure it's positioned to the beginning of the stream.
-                        responseStream.Position = 0;
+                        // copy the stream into memory so we can read it twice
+                        Stream rs = CopyAndClose(responseStream);
+                        blockBlob.UploadFromStream(rs);
+                        // start from scratch again
+                        rs.Position= 0;
                         // Compute the hash of the fileStream.
-                         hashValue = mySHA256.ComputeHash(responseStream);
+                        hashValue = mySHA256.ComputeHash(rs);
                     }
                     webResponse.Close();
                     processedCount++;
@@ -149,7 +286,9 @@ namespace AttachmentsService.Controllers
             response.attachmentProcessingDetails = attachmentProcessingDetails.ToArray();
             response.attachmentsProcessed = processedCount;
             return response;
+           
         }
+        */
 
         private const string GetAttachmentSoapRequest =
     @"<?xml version=""1.0"" encoding=""utf-8""?>
