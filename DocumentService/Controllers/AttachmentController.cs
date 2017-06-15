@@ -134,7 +134,10 @@ namespace AttachmentsService.Controllers
                 var blobName = request.folderName + "/" + fileName;
                 CloudBlockBlob blockBlob = container.GetBlockBlobReference(blobName);
                 byte[] hashValue;
-                blockBlob.UploadFromStream(s);
+                if (request.upload)
+                {
+                    blockBlob.UploadFromStream(s);
+                }
                 // start from scratch again
                 s.Position = 0;
                 // Compute the hash of the fileStream.
@@ -142,9 +145,9 @@ namespace AttachmentsService.Controllers
                 al.Add(new AttachmentProcessingDetails()
                 {
                     name = fileName,
-                    url = blockBlob.StorageUri.PrimaryUri.AbsoluteUri,
+                    url = request.upload ? blockBlob.StorageUri.PrimaryUri.AbsoluteUri : "",
                     hash = Convert.ToBase64String(hashValue),
-                    sasToken = GetBlobSasUri(container, blobName)
+                    sasToken = request.upload ? GetBlobSasUri(container, blobName) : ""
                 });
             }
             return al;

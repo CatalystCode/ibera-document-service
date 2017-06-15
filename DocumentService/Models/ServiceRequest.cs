@@ -6,6 +6,7 @@ namespace AttachmentsService.Models
 {
   public class ServiceRequest
   {
+    public bool upload { get; set; }
     public string containerName { get; set; }
     public string folderName { get; set; }
     public string attachmentToken { get; set; }
