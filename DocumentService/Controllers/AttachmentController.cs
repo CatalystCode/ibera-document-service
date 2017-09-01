@@ -17,13 +17,18 @@ namespace AttachmentService.Controllers
     [EnableCors("*", "*", "*")]
     public class AttachmentController : ApiController
     {
+        [HttpPost]
         public IHttpActionResult PostAttachments(ServiceRequest request)
         {
             ServiceResponse response = new ServiceResponse();
 
             try
             {
-                IEnumerable<string> values = Request.Headers.GetValues("user-token");
+                IEnumerable<string> values;
+                if (Request.Headers.TryGetValues("user-token", out values) == false)
+                {
+                    return new BadRequestErrorMessageResult("user-token header not present", this);
+                }
                 var userToken = values.FirstOrDefault();
                 string userId = AttachmentService.Services.UserIdService.GetUserId(userToken);
                 string folderName = HttpUtility.UrlEncode(userId);

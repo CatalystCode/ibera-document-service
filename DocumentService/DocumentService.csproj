@@ -192,7 +192,6 @@
     <Compile Include="Models\AttachmentDetails.cs" />
     <Compile Include="Models\ServiceRequest.cs" />
     <Compile Include="Models\ServiceResponse.cs" />
-    <Compile Include="Models\UserIdRequest.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\AttachmentService.cs" />
     <Compile Include="Services\UserIdService.cs" />
@@ -214,6 +213,7 @@
     <Content Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Properties\PublishProfiles\ibera-document-service - Web Deploy %282%29.pubxml" />
     <None Include="Properties\PublishProfiles\ibera-document-service - Web Deploy.pubxml" />
   </ItemGroup>
   <ItemGroup>
