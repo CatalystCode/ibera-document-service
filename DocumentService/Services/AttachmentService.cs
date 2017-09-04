@@ -137,7 +137,6 @@ namespace AttachmentService.Services
             var container = blobClient.GetContainerReference(request.containerName);
             container.CreateIfNotExists();
 
-            var attachmentsProcessedCount = 0;
             List<AttachmentProcessingDetails> attachmentProcessingDetails = new List<AttachmentProcessingDetails>();
             foreach (var attachment in request.attachments)
             {
@@ -192,7 +191,7 @@ namespace AttachmentService.Services
             }
 
             var response = new ServiceResponse();
-            response.attachmentsProcessed = attachmentsProcessedCount;
+            response.attachmentsProcessed = attachmentProcessingDetails.Count();
             response.attachmentProcessingDetails = attachmentProcessingDetails.ToArray();
             return response;
         }
